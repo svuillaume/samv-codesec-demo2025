@@ -117,7 +117,7 @@ resource "aws_instance" "ec2_with_secret" {
 
   user_data = <<-EOF
               #!/bin/bash
-              export DB_PASSWORD="SuperSecret123"
+              export DB_PASSWORD="root_pwd123"
               EOF
 
   tags = {

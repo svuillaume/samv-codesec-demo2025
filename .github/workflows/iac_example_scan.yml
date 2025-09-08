@@ -1,4 +1,4 @@
-name: lacework-iac-example
+name: lacework-xperts-iac_code_scanning_demo
 
 # Controls when the workflow will run
 on:

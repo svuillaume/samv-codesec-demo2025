@@ -7,7 +7,7 @@ $api_secret = "demo_51H8SecretKeyInPlainText";
 setcookie("session_token", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fakejwt", time() + 3600, "/");
 
 // Optional: another cookie with secret
-setcookie("api_key", "abc123-fake-api-key", time() + 3600, "/");
+setcookie("api_key", "abc56789-fake-api-key", time() + 3600, "/");
 
 // Output
 echo "<h1>Welcome to Insecure PHP App</h1>";

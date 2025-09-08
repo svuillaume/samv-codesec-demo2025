@@ -1,7 +1,9 @@
 name: Lacework SCA/SAST Pull Request
 
 on:
-  pull_request:
+  push:
+    # Run the scan on evey push in main
+    branches: [main]
     
 
 jobs:

@@ -1,4 +1,4 @@
-name: Lacework SCA/SAST Pull Request 
+name: Lacework SCA/SAST Pull Request - XPERTS Demo
 
 on: 
   pull_request: 

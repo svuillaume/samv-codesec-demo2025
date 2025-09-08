@@ -1,4 +1,4 @@
-name: lacework-xperts-iac_code_scanning_demo
+name: Lacework IaC Scan Push and PR - XPERTS Demo
 
 # Controls when the workflow will run
 on:

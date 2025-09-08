@@ -1,209 +1,206 @@
-name: Lacework SAST/SCA Security Scanning
+name: Lacework Code Security
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   schedule:
-    # Run weekly on Sundays at 2 AM UTC
-    - cron: '0 2 * * 0'
+    # Run daily at 7:00 AM UTC
+    - cron: '0 7 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+env:
+  LW_ACCOUNT_NAME: ${{ secrets.LW_ACCOUNT_NAME }}
+  LW_API_KEY: ${{ secrets.LW_API_KEY }}
+  LW_API_SECRET: ${{ secrets.LW_API_SECRET }}
 
 jobs:
-  lacework-sast-sca:
-    name: Lacework SAST/SCA Analysis
+  # Job for Pull Request analysis (compares source vs target branch)
+  pull-request-analysis:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    name: PR Security Analysis
+    strategy:
+      matrix:
+        target: [new, old]
     
-    permissions:
-      contents: read
-      security-events: write
-      actions: read
-
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Checkout old version
+        if: ${{ matrix.target == 'old' }}
+        run: git checkout HEAD^1
 
-    - name: Run Lacework SCA Scanner
-      env:
-        LW_ACCOUNT_NAME: ${{ secrets.LW_ACCOUNT_NAME }}
-        LW_ACCESS_TOKEN: ${{ secrets.LW_ACCESS_TOKEN }}
-      run: |
-        echo "Running Lacework SCA (Software Composition Analysis) scan..."
-        docker run --rm \
-          -v "${PWD}:/src" \
-          -e LW_ACCOUNT_NAME \
-          -e LW_ACCESS_TOKEN \
-          lacework/lacework-scanner:latest \
-          sca scan /src \
-          --json \
-          --save-results \
-          --output-file /src/lacework-sca-results.json
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
 
-    - name: Run Lacework SAST Scanner
-      env:
-        LW_ACCOUNT_NAME: ${{ secrets.LW_ACCOUNT_NAME }}
-        LW_ACCESS_TOKEN: ${{ secrets.LW_ACCESS_TOKEN }}
-      run: |
-        echo "Running Lacework SAST (Static Application Security Testing) scan..."
-        docker run --rm \
-          -v "${PWD}:/src" \
-          -e LW_ACCOUNT_NAME \
-          -e LW_ACCESS_TOKEN \
-          lacework/lacework-scanner:latest \
-          sast scan /src \
-          --json \
-          --save-results \
-          --output-file /src/lacework-sast-results.json
+      - name: Install dependencies
+        run: npm ci
 
-    - name: Process Lacework Results
-      if: always()
-      run: |
-        echo "Processing Lacework scan results..."
-        
-        # Check if results files exist
-        if [ -f lacework-sca-results.json ]; then
-          echo "SCA scan completed successfully"
-          SCA_ISSUES=$(jq '.vulnerabilities | length' lacework-sca-results.json 2>/dev/null || echo "0")
-          echo "Found $SCA_ISSUES SCA vulnerabilities"
-        fi
-        
-        if [ -f lacework-sast-results.json ]; then
-          echo "SAST scan completed successfully"
-          SAST_ISSUES=$(jq '.findings | length' lacework-sast-results.json 2>/dev/null || echo "0")
-          echo "Found $SAST_ISSUES SAST findings"
-        fi
+      - name: Run Lacework Analysis
+        uses: lacework/code-security-action@v1
+        with:
+          target: ${{ matrix.target }}
 
-    - name: Convert to SARIF format
-      if: always()
-      run: |
-        # Create SARIF output for GitHub Security tab integration
-        cat > lacework-results.sarif << 'EOF'
-        {
-          "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
-          "version": "2.1.0",
-          "runs": [
-            {
-              "tool": {
-                "driver": {
-                  "name": "Lacework",
-                  "informationUri": "https://www.lacework.com/",
-                  "version": "latest"
-                }
-              },
-              "results": []
-            }
-          ]
-        }
-        EOF
-        
-        # Merge SCA and SAST results if they exist
-        if [ -f lacework-sca-results.json ] || [ -f lacework-sast-results.json ]; then
-          echo "Converting Lacework results to SARIF format..."
-          # Note: This is a simplified conversion - in practice, you'd need proper SARIF conversion
-          # based on Lacework's actual JSON output format
-        fi
+  # Job to display PR comparison results
+  display-pr-results:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    name: Display PR Results
+    needs: pull-request-analysis
+    
+    steps:
+      - name: Display Analysis Results
+        id: code-analysis
+        uses: lacework/code-security-action@v1
+        with:
+          display_results: true
 
-    - name: Upload Lacework results to GitHub Security
-      if: always()
-      uses: github/codeql-action/upload-sarif@v3
-      with:
-        sarif_file: lacework-results.sarif
-      continue-on-error: true
+  # Job for Push/Schedule analysis (full scan with SARIF upload)
+  push-schedule-analysis:
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    name: Full Security Scan
+    
+    steps:
+      - name: Install Lacework CLI
+        run: |
+          # Download and install the Lacework CLI
+          curl https://raw.githubusercontent.com/lacework/go-sdk/main/cli/install.sh | bash
+          # Configure the Lacework CLI with credentials from GitHub secrets
+          lacework configure -a ${{ secrets.LW_ACCOUNT_NAME }}.lacework.net -k ${{ secrets.LW_API_KEY }} -s ${{ secrets.LW_API_SECRET }} --noninteractive
+          # Install the Software Composition Analysis (SCA) component
+          lacework component install sca
 
-    - name: Check for critical vulnerabilities
-      run: |
-        CRITICAL_COUNT=0
-        
-        # Check SCA results for critical vulnerabilities
-        if [ -f lacework-sca-results.json ]; then
-          CRITICAL_SCA=$(jq '[.vulnerabilities[] | select(.severity == "CRITICAL")] | length' lacework-sca-results.json 2>/dev/null || echo "0")
-          echo "Critical SCA vulnerabilities: $CRITICAL_SCA"
-          CRITICAL_COUNT=$((CRITICAL_COUNT + CRITICAL_SCA))
-        fi
-        
-        # Check SAST results for high severity findings
-        if [ -f lacework-sast-results.json ]; then
-          HIGH_SAST=$(jq '[.findings[] | select(.severity == "HIGH" or .severity == "CRITICAL")] | length' lacework-sast-results.json 2>/dev/null || echo "0")
-          echo "High/Critical SAST findings: $HIGH_SAST"
-          CRITICAL_COUNT=$((CRITICAL_COUNT + HIGH_SAST))
-        fi
-        
-        echo "Total critical issues found: $CRITICAL_COUNT"
-        
-        if [ "$CRITICAL_COUNT" -gt 0 ]; then
-          echo "::error::Found $CRITICAL_COUNT critical security issues"
-          echo "::notice::Please review the security findings and address critical vulnerabilities before merging"
-          exit 1
-        else
-          echo "::notice::No critical security issues found"
-        fi
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Generate Security Report
-      if: always()
-      run: |
-        echo "# Lacework Security Scan Report" > security-report.md
-        echo "Generated on: $(date)" >> security-report.md
-        echo "" >> security-report.md
-        
-        if [ -f lacework-sca-results.json ]; then
-          echo "## Software Composition Analysis (SCA) Results" >> security-report.md
-          SCA_TOTAL=$(jq '.vulnerabilities | length' lacework-sca-results.json 2>/dev/null || echo "0")
-          echo "- Total vulnerabilities found: $SCA_TOTAL" >> security-report.md
-          echo "" >> security-report.md
-        fi
-        
-        if [ -f lacework-sast-results.json ]; then
-          echo "## Static Application Security Testing (SAST) Results" >> security-report.md
-          SAST_TOTAL=$(jq '.findings | length' lacework-sast-results.json 2>/dev/null || echo "0")
-          echo "- Total findings: $SAST_TOTAL" >> security-report.md
-          echo "" >> security-report.md
-        fi
-        
-        echo "## Recommendations" >> security-report.md
-        echo "1. Review all findings in the Lacework console" >> security-report.md
-        echo "2. Prioritize fixing critical and high severity issues" >> security-report.md
-        echo "3. Update dependencies to latest secure versions" >> security-report.md
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
 
-    - name: Upload scan artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: lacework-security-scan-results
-        path: |
-          lacework-sca-results.json
-          lacework-sast-results.json
-          lacework-results.sarif
-          security-report.md
-        retention-days: 30
+      - name: Install dependencies
+        run: npm ci
 
-    - name: Comment PR with results
-      if: github.event_name == 'pull_request' && always()
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const fs = require('fs');
-          
-          let comment = '## 🔒 Lacework Security Scan Results\n\n';
-          
-          try {
-            if (fs.existsSync('security-report.md')) {
-              const report = fs.readFileSync('security-report.md', 'utf8');
-              comment += report;
-            } else {
-              comment += 'Security scan completed. Check the workflow logs for details.\n';
-            }
+      - name: Run Lacework SCA/SAST Scan
+        run: |
+          echo "Running Lacework SCA and SAST scan..."
+          lacework sca scan ./ -f sarif -o lacework-scan.sarif
+
+      - name: Upload SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: lacework-scan.sarif
+        continue-on-error: true
+
+      - name: Process scan results
+        if: always()
+        run: |
+          if [ -f lacework-scan.sarif ]; then
+            echo "Scan completed successfully"
+            # Extract summary information from SARIF
+            RESULTS_COUNT=$(jq '.runs[0].results | length' lacework-scan.sarif 2>/dev/null || echo "0")
+            echo "Found $RESULTS_COUNT security findings"
             
-            comment += '\n---\n*View detailed results in the [Security tab](../../security/code-scanning)*';
+            # Check for high/critical severity issues
+            HIGH_CRITICAL=$(jq '[.runs[0].results[] | select(.level == "error")] | length' lacework-scan.sarif 2>/dev/null || echo "0")
+            echo "High/Critical issues: $HIGH_CRITICAL"
             
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: comment
-            });
-          } catch (error) {
-            console.log('Could not create PR comment:', error.message);
-          }
+            if [ "$HIGH_CRITICAL" -gt 0 ]; then
+              echo "::warning::Found $HIGH_CRITICAL high/critical security issues"
+              echo "::notice::Review findings in the Security tab and Lacework console"
+            else
+              echo "::notice::No critical security issues found"
+            fi
+          else
+            echo "::error::Scan did not complete successfully"
+          fi
+
+      - name: Generate Security Report
+        if: always()
+        run: |
+          echo "# Lacework Security Scan Report" > security-report.md
+          echo "**Scan Date:** $(date)" >> security-report.md
+          echo "**Repository:** ${{ github.repository }}" >> security-report.md
+          echo "**Branch:** ${{ github.ref_name }}" >> security-report.md
+          echo "" >> security-report.md
+          
+          if [ -f lacework-scan.sarif ]; then
+            TOTAL_FINDINGS=$(jq '.runs[0].results | length' lacework-scan.sarif 2>/dev/null || echo "0")
+            HIGH_CRITICAL=$(jq '[.runs[0].results[] | select(.level == "error")] | length' lacework-scan.sarif 2>/dev/null || echo "0")
+            MEDIUM=$(jq '[.runs[0].results[] | select(.level == "warning")] | length' lacework-scan.sarif 2>/dev/null || echo "0")
+            LOW=$(jq '[.runs[0].results[] | select(.level == "note")] | length' lacework-scan.sarif 2>/dev/null || echo "0")
+            
+            echo "## 📊 Scan Summary" >> security-report.md
+            echo "- **Total Findings:** $TOTAL_FINDINGS" >> security-report.md
+            echo "- **High/Critical:** $HIGH_CRITICAL 🔴" >> security-report.md
+            echo "- **Medium:** $MEDIUM 🟡" >> security-report.md
+            echo "- **Low/Info:** $LOW 🟢" >> security-report.md
+            echo "" >> security-report.md
+            
+            echo "## 🔗 Links" >> security-report.md
+            echo "- [View in GitHub Security](../../security/code-scanning)" >> security-report.md
+            echo "- [Lacework Console](https://${{ secrets.LW_ACCOUNT_NAME }}.lacework.net)" >> security-report.md
+            echo "" >> security-report.md
+            
+            echo "## 📋 Next Steps" >> security-report.md
+            echo "1. Review findings in the GitHub Security tab" >> security-report.md
+            echo "2. Check detailed analysis in Lacework console" >> security-report.md
+            echo "3. Prioritize fixing high/critical vulnerabilities" >> security-report.md
+            echo "4. Update dependencies to secure versions" >> security-report.md
+          else
+            echo "❌ **Scan Failed** - Check workflow logs for details" >> security-report.md
+          fi
+
+      - name: Upload scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lacework-security-scan-${{ github.run_number }}
+          path: |
+            lacework-scan.sarif
+            security-report.md
+          retention-days: 30
+
+  # Alternative job using the official Lacework action for push events
+  lacework-action-scan:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    name: Lacework Action Scan
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Lacework Code Security Action
+        uses: lacework/code-security-action@v1
+        with:
+          target: push

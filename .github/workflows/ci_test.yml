@@ -1,12 +1,10 @@
-name: Build, Scan, and Push Docker Image
+name: Build, Scan, and Push Docker Image to ECR
 
 on:
   push:
-    branches: [ main ]
-    paths: [ 'Dockerfile' ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
-    paths: [ 'Dockerfile' ]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -35,7 +33,6 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to Amazon ECR
-        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Set up Docker Buildx
@@ -45,16 +42,15 @@ jobs:
         id: vars
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Build Docker Image (for scanning)
+      - name: Build Docker image (scan-temp)
         uses: docker/build-push-action@v5
         with:
           context: .
           load: true
           tags: ${{ env.IMAGE_NAME }}:scan-temp
 
-      - name: Scan image with Lacework
-        uses: lacework/lw-scanner-action@v1.3.0
-        continue-on-error: true
+      - name: Scan image with Lacework inline scanner
+        uses: lacework/lw-scanner-action@v1.4.0
         with:
           LW_ACCOUNT_NAME: ${{ secrets.LW_ACCOUNT_NAME }}
           LW_ACCESS_TOKEN: ${{ secrets.LW_ACCESS_TOKEN }}
@@ -63,7 +59,21 @@ jobs:
           SAVE_RESULTS_IN_LACEWORK: true
           RESULTS_IN_GITHUB_SUMMARY: true
 
-      - name: Build and Push Docker Image (tagged)
+      - name: Format scan results for PR comment
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "# Lacework Inline Scanner Result" > pr-results.md
+          echo "<pre>" >> pr-results.md
+          echo "Scan completed. See the GitHub Summary above or view results in Lacework." >> pr-results.md
+          echo "</pre>" >> pr-results.md
+
+      - name: Comment PR with scan summary
+        if: github.event_name == 'pull_request'
+        uses: thollander/actions-comment-pull-request@v2
+        with:
+          filePath: pr-results.md
+
+      - name: Build and Push Docker image to ECR
         if: github.ref == 'refs/heads/main'
         uses: docker/build-push-action@v5
         with:
@@ -73,25 +83,3 @@ jobs:
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:${{ env.VERSION }}
             ${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.sha_short }}
-
-      - name: Format scan results for comment
-        if: github.event_name == 'pull_request' || github.event_name == 'push'
-        run: |
-          echo "# Lacework Inline Scanner Result" > pr-results.md
-          echo "<pre>" >> pr-results.md
-          cat results.stdout >> pr-results.md || echo "No results found" >> pr-results.md
-          echo "</pre>" >> pr-results.md
-
-      - name: Comment PR
-        if: github.event_name == 'pull_request'
-        uses: thollander/actions-comment-pull-request@v2
-        with:
-          filePath: pr-results.md
-
-      - name: Re-check scan result and fail if needed
-        if: github.event_name == 'pull_request' || github.event_name == 'push'
-        run: |
-          if grep -q "Policy.*failed" results.stdout; then
-            echo "Lacework scan failed policy check. Failing job."
-            exit 1
-          fi

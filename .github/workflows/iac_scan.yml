@@ -1,0 +1,71 @@
+name: lacework-iac-scan
+
+on:
+  push:
+    paths:
+      - '**.tf'
+  pull_request:
+    paths:
+      - '**.tf'
+  workflow_dispatch:
+
+jobs:
+  iac-scan:
+    runs-on: ubuntu-latest
+    name: Lacework IaC Scan
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Create env file for Lacework
+        run: |
+          echo "LW_ACCOUNT=${{ secrets.LW_ACCOUNT }}" >> env.list
+          echo "LW_API_KEY=${{ secrets.LW_API_KEY }}" >> env.list
+          echo "LW_API_SECRET=${{ secrets.LW_API_SECRET }}" >> env.list
+
+      - name: Run Lacework IaC Scan (built-in policies only)
+        run: |
+          docker run \
+            --env-file env.list \
+            -v "$(pwd):/app/src" \
+            lacework/codesec:stable \
+            lacework iac scan \
+              --directory=/app/src \
+              --output-file /app/src/iac-scan-results.json \
+              --output-format json
+
+      - name: Convert IaC scan results to markdown
+        run: |
+          echo "## Lacework IaC Scan Results" > iac-scan-report.md
+          jq -r '
+            if . | type == "array" then
+              .[] | select(.severity != null) | 
+              "- **ID**: \(.policy_id)  
+                **Severity**: \(.severity)  
+                **Title**: \(.title)  
+                **File**: \(.file_path)  
+                **Line**: \(.line_number)  
+                **Message**: \(.message)\n"
+            else
+              "No findings."
+            end
+          ' iac-scan-results.json >> iac-scan-report.md
+
+      - name: Upload IaC scan results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lacework-iac-report
+          path: |
+            iac-scan-results.json
+            iac-scan-report.md
+
+      - name: Fail CI if violations found
+        run: |
+          count=$(jq '[.[] | select(.severity == "High" or .severity == "Critical")] | length' iac-scan-results.json)
+          if [ "$count" -gt 0 ]; then
+            echo "Found $count high/critical violations."
+            exit 1
+          else
+            echo "No critical/high violations found."
+          fi

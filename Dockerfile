@@ -1,10 +1,12 @@
-# Use Alpine as base
-FROM alpine:3.19
+# ⚠️ INTENTIONALLY INSECURE FOR SCANNER TESTING ONLY
+FROM node:10.0.0
 
-LABEL maintainer = "svuillaume@fortinet.com"
+# Optional: add secrets and unsafe practices
+ENV AWS_SECRET_ACCESS_KEY="AKIAFAKE-EXAMPLE"
 
-RUN apk update && \
-    apk add curl && \
-    apk add vim && \
-    apk add git
-# new comment
+# Install packages that will show up in CVE databases
+RUN npm install -g express
+
+CMD ["node"]
+
+# new comment hello

@@ -1,60 +1,61 @@
 provider "aws" {
-  region = "us-central-1"
+  region = "ca-central-1"
 }
 
-resource "aws_iam_role" "admin_role" {
-  name = "vulnerable-admin-role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Action    = "sts:AssumeRole",
-        Effect    = "Allow",
-        Principal = {
-          Service = "ec2.amazonaws.com"
-        }
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "admin_policy" {
-  role       = aws_iam_role.admin_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
-}
-
-resource "aws_instance" "vulnerable_ec2" {
-  ami                    = "ami-0c02fb55956c7d316" # Amazon Linux 2 AMI (us-east-1)
-  instance_type          = "t2.micro"
-  associate_public_ip_address = true
-
-  iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
-
-  user_data = <<-EOF
-              #!/bin/bash
-              echo "Hello from vulnerable instance!" > /home/ec2-user/hello.txt
-              EOF
+# 1. Public S3 bucket (intentionally public)
+resource "aws_s3_bucket" "public_bucket_demo" {
+  bucket = "extremely-insecure-public-bucket-demo"
+  acl    = "public-read"
 
   tags = {
-    Name = "vulnerable-ec2"
+    Name        = "VulnerablePublicBucket"
+    Environment = "Test1"
   }
 }
 
-resource "aws_iam_instance_profile" "ec2_profile" {
-  name = "vulnerable-ec2-profile"
-  role = aws_iam_role.admin_role.name
+resource "aws_s3_bucket_website_configuration" "public_bucket_demo_website" {
+  bucket = aws_s3_bucket.public_bucket_demo.id
+
+  index_document {
+    suffix = "index.html"
+  }
 }
 
-resource "aws_security_group" "vulnerable_sg" {
-  name        = "vulnerable-sg"
-  description = "Allow all inbound traffic"
-  vpc_id      = data.aws_vpc.default.id
+resource "aws_s3_bucket_policy" "public_policy_demo" {
+  bucket = aws_s3_bucket.public_bucket_demo.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Sid       = "PublicReadGetObject",
+      Effect    = "Allow",
+      Principal = "*",
+      Action    = "s3:GetObject",
+      Resource  = "${aws_s3_bucket.public_bucket_demo.arn}/*"
+    }]
+  })
+}
+
+# 2. Unencrypted S3 bucket
+resource "aws_s3_bucket" "unencrypted_bucket_demo" {
+  bucket = "totally-unprotected-data-bucket"
+
+  tags = {
+    Name = "NoEncryption"
+  }
+}
+
+# 3. SSH-only security group
+resource "aws_security_group" "open_sg_demo" {
+  name        = "allow_ssh_only"
+  description = "Allow SSH inbound only"
+  vpc_id      = "vpc-02bb3bfffb72e11c1"
 
   ingress {
-    description = "All traffic"
-    from_port   = 0
-    to_port     = 65535
-    protocol    = "-1"
+    description = "SSH access"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
@@ -66,39 +67,97 @@ resource "aws_security_group" "vulnerable_sg" {
   }
 }
 
-data "aws_vpc" "default" {
-  default = true
-}
+# 4. EC2 with hardcoded root password, unencrypted disk
+resource "aws_instance" "vulnerable_ec2_demo" {
+  ami                    = "ami-0c02fb55956c7d316"
+  instance_type          = "t2.micro"
+  subnet_id              = "subnet-017564b2267b23fae"
+  vpc_security_group_ids = [aws_security_group.open_sg_demo.id]
 
-resource "aws_s3_bucket" "vulnerable_bucket" {
-  bucket = "vulnerable-public-bucket-${random_id.bucket_id.hex}"
+  user_data = <<-EOF
+              #!/bin/bash
+              echo "root:SuperInsecurePassword123!" | chpasswd
+              EOF
+
+  root_block_device {
+    volume_size           = 8
+    volume_type           = "gp2"
+    delete_on_termination = true
+    encrypted             = false
+  }
 
   tags = {
-    Name = "vulnerable-bucket"
+    Name = "InsecureEC2"
   }
 }
 
-resource "random_id" "bucket_id" {
-  byte_length = 4
+# 5. EC2 with IMDSv1 enabled
+resource "aws_instance" "ec2_with_imdsv1" {
+  ami                    = "ami-0c02fb55956c7d316"
+  instance_type          = "t2.micro"
+  subnet_id              = "subnet-017564b2267b23fae"
+  vpc_security_group_ids = [aws_security_group.open_sg_demo.id]
+
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "optional"
+  }
+
+  tags = {
+    Name = "EC2WithIMDSv1"
+  }
 }
 
-resource "aws_s3_bucket_policy" "public_access" {
-  bucket = aws_s3_bucket.vulnerable_bucket.id
+# 6. EC2 with hardcoded secret
+resource "aws_instance" "ec2_with_secret" {
+  ami                    = "ami-0c02fb55956c7d316"
+  instance_type          = "t2.micro"
+  subnet_id              = "subnet-017564b2267b23fae"
+  vpc_security_group_ids = [aws_security_group.open_sg_demo.id]
 
-  policy = jsonencode({
+  user_data = <<-EOF
+              #!/bin/bash
+              export DB_PASSWORD="SuperSecret123"
+              EOF
+
+  tags = {
+    Name = "EC2WithHardcodedSecret"
+  }
+}
+
+# 7. IAM user and hardcoded access key
+resource "aws_iam_user" "insecure_user_demo" {
+  name = "insecure-user"
+}
+
+resource "aws_iam_access_key" "insecure_key_demo" {
+  user    = aws_iam_user.insecure_user_demo.name
+  pgp_key = "keybase:somekey"
+}
+
+# 8. IAM Admin role (over-privileged)
+resource "aws_iam_role" "admin_role_demo" {
+  name = "insecure-admin-role"
+
+  assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
       {
-        Sid       = "PublicReadGetObject",
-        Effect    = "Allow",
-        Principal = "*",
-        Action    = [
-          "s3:GetObject"
-        ],
-        Resource = [
-          "${aws_s3_bucket.vulnerable_bucket.arn}/*"
-        ]
+        Action = "sts:AssumeRole",
+        Effect = "Allow",
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
       }
     ]
   })
+
+  tags = {
+    Name = "FullAdminRole"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "admin_role_attachment_demo" {
+  role       = aws_iam_role.admin_role_demo.name
+  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
 }

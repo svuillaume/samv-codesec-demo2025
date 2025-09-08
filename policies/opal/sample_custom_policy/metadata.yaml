@@ -1,0 +1,7 @@
+category: Compute
+checkTool: opal
+checkType: Terraform
+description: ""
+provider: AWS
+severity: Critical
+title: "sample_custom_policy"

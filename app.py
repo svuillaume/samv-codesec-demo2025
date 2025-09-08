@@ -14,7 +14,7 @@ def index():
     # Insecure cookie: SameSite=None without Secure
     resp.set_cookie(
         "foo",
-        "secret123",
+        "secret12345",
         samesite='None',
         secure=False
     )

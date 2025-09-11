@@ -1,3 +1,10 @@
+name: Lacework SCA/SAST active only
+
+on:
+  push:
+    # Run the scan on evey push in main
+    branches: [main]
+    
 jobs: 
   build: 
     runs-on: ubuntu-latest

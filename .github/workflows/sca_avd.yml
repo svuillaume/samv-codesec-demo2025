@@ -26,7 +26,9 @@ jobs:
 
       # Step 3: Run the Lacework SCA scan on the target branch and save the output 
       - name: Run Lacework SCA Scan on Target Branch 
-        run: lacework sca scan ./ --active-only --acf -f sarif -o /tmp/lacework-scan-target.json
+        run: lacework sca scan ./ -f sarif -o /tmp/lacework-scan-target.json
+
+        #run: lacework sca scan ./ --active-only --acf -f sarif -o /tmp/lacework-scan-target.json
 
       # Step 4: Upload the SARIF file for analysis or further use 
       - name: Upload SARIF File 

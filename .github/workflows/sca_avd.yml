@@ -1,7 +1,7 @@
 name: Lacework SCA/SAST Pull Request - XPERTS Demo
 
 on: 
-  pull_request: 
+  push: 
     branches: 
       - main  # Specify the target branch for the pull request trigger 
 

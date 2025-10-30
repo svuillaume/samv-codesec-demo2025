@@ -1,5 +1,4 @@
 [tool.poetry.dependencies]
 python==3.11
 requests==2.28.0
-paramiko==2.4.1
 

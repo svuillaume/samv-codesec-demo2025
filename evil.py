@@ -3,7 +3,7 @@ import yaml
 
 # This YAML string can execute arbitrary code
 malicious_yaml = """
-!!python/object/apply:os.system ["echo Vulnerable!"]
+!!python/object/apply:os.system ["echo this is Vulnerable!"]
 """
 
 # Vulnerable usage

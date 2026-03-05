@@ -5,6 +5,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: write
 
 env:
   LW_ACCOUNT_NAME: ${{ secrets.LW_ACCOUNT_NAME }}
@@ -36,9 +37,42 @@ jobs:
     name: Display results
     needs:
       - run-analysis
+    outputs:
+      critical-count: ${{ steps.code-analysis.outputs.critical }}
     steps:
       - name: Results
         id: code-analysis
         uses: lacework/code-security-action@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  open-issue-on-critical:
+    runs-on: ubuntu-latest
+    name: Open issue for critical CVEs
+    needs:
+      - display-results
+    if: ${{ needs.display-results.outputs.critical-count > 0 }}
+    steps:
+      - name: Create GitHub Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const count = '${{ needs.display-results.outputs.critical-count }}';
+            const sha = context.sha.slice(0, 7);
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[Security] ${count} Critical CVE(s) detected in ${sha}`,
+              labels: ['security', 'critical'],
+              body: [
+                '## Critical CVEs Detected',
+                '',
+                `**${count} critical CVE(s)** were identified by Lacework in commit \`${context.sha}\`.`,
+                '',
+                `**Workflow run:** ${runUrl}`,
+                `**PR:** #${context.issue.number}`,
+                '',
+                'Please review and remediate before merging.',
+              ].join('\n'),
+            });

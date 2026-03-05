@@ -6,7 +6,7 @@ on:
     schedule:
       - cron: '0 7 * * *'
     # To manually trigger scans from the GitHub UI
-    workflow_dispatch:
+   
 
 env:
   LW_ACCOUNT_NAME: ${{ secrets.LW_ACCOUNT_NAME }}

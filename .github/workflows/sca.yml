@@ -21,6 +21,8 @@ jobs:
     name: Run analysis
     outputs:
       has-critical: ${{ steps.check.outputs.has-critical }}
+      count: ${{ steps.check.outputs.count }}
+      cve-table: ${{ steps.check.outputs.cve-table }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -37,13 +39,41 @@ jobs:
         id: check
         run: |
           RESULTS=$(find lw-results -type f | head -1)
-          CRITICAL=$(jq '[.. | objects | select(
-            (.level? == "error") or
-            ((.properties?.severity? // .severity?) | ascii_downcase? == "critical")
-          )] | length' "$RESULTS" 2>/dev/null || echo "0")
-          echo "Found critical CVE count: $CRITICAL"
-          if [ "$CRITICAL" -gt "0" ]; then
+          echo "Parsing: $RESULTS"
+
+          # Extract critical findings — handles SARIF and common Lacework JSON formats
+          FINDINGS=$(jq -c '
+            if .runs? then
+              [.runs[].results[] |
+                select(
+                  .level == "error" or
+                  ((.properties?.severity? // .properties?.["security-severity"]?) | ascii_downcase? == "critical")
+                ) | {
+                  cve:  (.ruleId // "N/A"),
+                  file: (.locations[0]?.physicalLocation?.artifactLocation?.uri // "N/A")
+                }
+              ]
+            elif type == "array" then
+              [.[] |
+                select((.severity? | ascii_downcase?) == "critical") | {
+                  cve:  (.cve_id // .cve // .id // "N/A"),
+                  file: (.file_path // .path // .location // "N/A")
+                }
+              ]
+            else [] end
+          ' "$RESULTS" 2>/dev/null || echo "[]")
+
+          COUNT=$(echo "$FINDINGS" | jq 'length')
+          echo "Critical CVEs found: $COUNT"
+
+          if [ "$COUNT" -gt "0" ]; then
+            TABLE=$(echo "$FINDINGS" | jq -r '
+              "| CVE ID | File |\n|---|---|\n" +
+              (map("| \(.cve) | `\(.file)` |") | join("\n"))
+            ')
             echo "has-critical=true" >> $GITHUB_OUTPUT
+            echo "count=$COUNT" >> $GITHUB_OUTPUT
+            echo "cve-table=$(echo "$TABLE" | base64 -w 0)" >> $GITHUB_OUTPUT
           fi
 
   open-issue-on-critical:
@@ -55,18 +85,24 @@ jobs:
     steps:
       - name: Create GitHub Issue
         uses: actions/github-script@v7
+        env:
+          CVE_TABLE_B64: ${{ needs.run-analysis.outputs.cve-table }}
         with:
           script: |
             const sha = context.sha.slice(0, 7);
+            const count = '${{ needs.run-analysis.outputs.count }}';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const table = Buffer.from(process.env.CVE_TABLE_B64, 'base64').toString('utf-8');
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `[Security] Critical CVE(s) detected in ${sha}`,
+              title: `[Security] ${count} Critical CVE(s) detected in ${sha}`,
               body: [
                 '## Critical CVEs Detected',
                 '',
-                `Critical CVE(s) were identified by Lacework in commit \`${context.sha}\`.`,
+                `**${count} critical CVE(s)** were identified by Lacework in commit \`${context.sha}\`.`,
+                '',
+                table,
                 '',
                 `**Workflow run:** ${runUrl}`,
                 '',

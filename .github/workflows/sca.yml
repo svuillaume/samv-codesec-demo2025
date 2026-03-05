@@ -19,20 +19,49 @@ jobs:
   run-analysis:
     runs-on: ubuntu-latest
     name: Run analysis
+    strategy:
+      matrix:
+        target: [new, old]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 2
+      - name: Checkout old
+        if: matrix.target == 'old'
+        run: git checkout HEAD~1
       - name: Analyze
         uses: lacework/code-security-action@v1
         with:
-          target: new
+          target: ${{ matrix.target }}
+
+  check-results:
+    runs-on: ubuntu-latest
+    name: Check results
+    needs:
+      - run-analysis
+    outputs:
+      has-critical: ${{ steps.set-flag.outputs.has-critical }}
+    env:
+      GITHUB_BASE_REF: main
+    steps:
+      - name: Results
+        id: code-analysis
+        continue-on-error: true
+        uses: lacework/code-security-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Flag critical CVEs
+        id: set-flag
+        if: steps.code-analysis.outcome == 'failure'
+        run: echo "has-critical=true" >> $GITHUB_OUTPUT
 
   open-issue-on-critical:
     runs-on: ubuntu-latest
     name: Open issue for critical CVEs
     needs:
-      - run-analysis
-    if: failure()
+      - check-results
+    if: always() && needs.check-results.outputs.has-critical == 'true'
     steps:
       - name: Create GitHub Issue
         uses: actions/github-script@v7

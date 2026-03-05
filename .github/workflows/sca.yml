@@ -36,6 +36,7 @@ jobs:
   display-results:
     runs-on: ubuntu-latest
     name: Display results
+    if: github.event_name == 'pull_request'
     needs:
       - run-analysis
     outputs:
@@ -53,7 +54,7 @@ jobs:
     name: Open issue for critical CVEs
     needs:
       - display-results
-    if: ${{ needs.display-results.outputs.has-critical == 'true' }}
+    if: ${{ needs.display-results.result == 'success' && needs.display-results.outputs.has-critical == 'true' }}
     steps:
       - name: Create GitHub Issue
         uses: actions/github-script@v7

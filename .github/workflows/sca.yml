@@ -19,49 +19,39 @@ jobs:
   run-analysis:
     runs-on: ubuntu-latest
     name: Run analysis
-    strategy:
-      matrix:
-        target: [new, old]
+    outputs:
+      has-critical: ${{ steps.check.outputs.has-critical }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-        with:
-          fetch-depth: 2
-      - name: Checkout old
-        if: matrix.target == 'old'
-        run: git checkout HEAD~1
       - name: Analyze
         uses: lacework/code-security-action@v1
         with:
-          target: ${{ matrix.target }}
-
-  check-results:
-    runs-on: ubuntu-latest
-    name: Check results
-    needs:
-      - run-analysis
-    outputs:
-      has-critical: ${{ steps.set-flag.outputs.has-critical }}
-    env:
-      GITHUB_BASE_REF: main
-    steps:
-      - name: Results
-        id: code-analysis
-        continue-on-error: true
-        uses: lacework/code-security-action@v1
+          target: new
+      - name: Download results artifact
+        uses: actions/download-artifact@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Flag critical CVEs
-        id: set-flag
-        if: steps.code-analysis.outcome == 'failure'
-        run: echo "has-critical=true" >> $GITHUB_OUTPUT
+          name: results-new
+          path: lw-results
+      - name: Check for critical CVEs
+        id: check
+        run: |
+          RESULTS=$(find lw-results -type f | head -1)
+          CRITICAL=$(jq '[.. | objects | select(
+            (.level? == "error") or
+            ((.properties?.severity? // .severity?) | ascii_downcase? == "critical")
+          )] | length' "$RESULTS" 2>/dev/null || echo "0")
+          echo "Found critical CVE count: $CRITICAL"
+          if [ "$CRITICAL" -gt "0" ]; then
+            echo "has-critical=true" >> $GITHUB_OUTPUT
+          fi
 
   open-issue-on-critical:
     runs-on: ubuntu-latest
     name: Open issue for critical CVEs
     needs:
-      - check-results
-    if: always() && needs.check-results.outputs.has-critical == 'true'
+      - run-analysis
+    if: always() && needs.run-analysis.outputs.has-critical == 'true'
     steps:
       - name: Create GitHub Issue
         uses: actions/github-script@v7

@@ -1,0 +1,35 @@
+name: Lacework SCA/SAST active only
+
+on:
+   - workflow_dispatch
+    
+jobs: 
+  build: 
+    runs-on: ubuntu-latest
+
+    steps: 
+      # Step 1: Install the Lacework CLI and SCA component 
+      - name: Install Lacework CLI 
+        run: | 
+          curl https://raw.githubusercontent.com/lacework/go-sdk/main/cli/install.sh | bash 
+          lacework configure -a ${{ secrets.LW_ACCOUNT }}.lacework.net -k ${{ secrets.LW_API_KEY }} -s ${{ secrets.LW_API_SECRET }} --noninteractive 
+          lacework component install sca 
+
+      # Step 2: Check out the target branch of the pull request 
+      - name: Checkout target branch 
+        uses: actions/checkout@v3
+        with: 
+          ref: ${{ github.event.pull_request.base.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 3: Run the Lacework SCA scan on the target branch and save the output 
+      - name: Run Lacework SCA Scan on Target Branch 
+        #run: lacework sca scan ./ -f sarif -o /tmp/lacework-scan-target.json
+        run: lacework sca scan ./ --active-only --acf -f sarif -o /tmp/lacework-scan-target.json
+
+      # Step 4: Upload the SARIF file for analysis or further use 
+      - name: Upload SARIF File 
+        uses: actions/upload-artifact@v4
+        with: 
+          name: lacework-scan-results
+          path: /tmp/lacework-scan-target.json  # Fixed: matches the scan output file

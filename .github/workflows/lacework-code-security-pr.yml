@@ -50,9 +50,45 @@ jobs:
         # Compare the JSON outputs from the source and target branches 
         # Generate the comparison result in SARIF format and save to /tmp/lacework-comparison.sarif 
 
-      # Step 7: Upload the SARIF file for analysis or further use 
-      - name: Upload SARIF File 
-        uses: actions/upload-artifact@v3  # Use the upload artifact action to save the SARIF file 
-        with: 
-          name: lacework-comparison-report  # Name of the uploaded artifact 
-          path: /tmp/lacework-comparison.sarif  # Path to the SARIF file
+      # Step 7: Upload the SARIF file for analysis or further use
+      - name: Upload SARIF File
+        uses: actions/upload-artifact@v4
+        with:
+          name: lacework-comparison-report
+          path: /tmp/lacework-comparison.sarif
+
+      # Step 8: Send only essential finding fields to Claude to save tokens
+      - name: Get AI fix suggestions from Claude
+        id: claude_fix
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          FINDINGS=$(jq -c '[.runs[].results[] | {rule: .ruleId, msg: .message.text, file: .locations[0].physicalLocation.artifactLocation.uri, line: .locations[0].physicalLocation.region.startLine}]' /tmp/lacework-comparison.sarif 2>/dev/null || echo "[]")
+          PAYLOAD=$(jq -n --arg f "$FINDINGS" '{
+            model: "claude-sonnet-4-6",
+            max_tokens: 1024,
+            messages: [{
+              role: "user",
+              content: ("Fix these vulnerabilities. For each, one short paragraph + minimal code snippet.\n\n" + $f)
+            }]
+          }')
+          SUGGESTION=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d "$PAYLOAD" | jq -r '.content[0].text // "No suggestions returned."')
+          echo "suggestion<<EOF" >> $GITHUB_OUTPUT
+          echo "$SUGGESTION" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      # Step 9: Post fix suggestions as PR comment
+      - name: Post fix suggestions as PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## FortiCNAPP AI Fix Suggestions\n\n${{ steps.claude_fix.outputs.suggestion }}`,
+            });

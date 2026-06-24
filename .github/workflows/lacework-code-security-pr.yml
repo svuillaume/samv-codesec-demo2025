@@ -27,10 +27,14 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}  # Reference the source branch of the pull request 
           token: ${{ secrets.GITHUB_TOKEN }}  # Use the GitHub token for authentication 
 
-      # Step 3: Run the Lacework SCA scan on the source branch and save the output 
-      - name: Run Lacework SCA Scan on Source Branch 
-        run: lacework sca scan ./ -f sarif -o /tmp/lacework-scan-source.json 
-        # Scan the source branch code, output in SARIF format, and save to /tmp/lacework-scan-source.json 
+      # Step 3: Run the Lacework SCA scan on the source branch and save the output
+      - name: Run Lacework SCA Scan on Source Branch
+        run: lacework sca scan ./ -f sarif -o /tmp/lacework-scan-source.json
+
+      # Step 3b: Generate SBOM from source branch (must run while source is checked out)
+      - name: Generate SBOM
+        run: |
+          lacework sca scan ./ -f cyclonedx-json -o /tmp/lacework-sbom.json || echo '{"components":[]}' > /tmp/lacework-sbom.json
 
       # Step 4: Check out the target branch of the pull request 
       - name: Checkout target branch 
@@ -81,14 +85,44 @@ jobs:
           echo "$SUGGESTION" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      # Step 9: Post fix suggestions as PR comment
+      # Step 9: Post fix suggestions and SBOM as PR comment
       - name: Post fix suggestions as PR comment
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
+            const suggestion = `${{ steps.claude_fix.outputs.suggestion }}`;
+
+            let sbomTable = '| Package | Version | PURL |\n|---------|---------|------|\n';
+            try {
+              const sbom = JSON.parse(fs.readFileSync('/tmp/lacework-sbom.json', 'utf8'));
+              const components = sbom.components || [];
+              if (components.length === 0) {
+                sbomTable += '| No packages detected | — | — |';
+              } else {
+                sbomTable += components.slice(0, 20)
+                  .map(c => `| ${c.name} | ${c.version || 'N/A'} | ${c.purl || 'N/A'} |`)
+                  .join('\n');
+                if (components.length > 20)
+                  sbomTable += `\n\n_Showing 20 of ${components.length} components._`;
+              }
+            } catch(e) {
+              sbomTable += '| Error reading SBOM | — | — |';
+            }
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: `## FortiCNAPP AI Fix Suggestions\n\n${{ steps.claude_fix.outputs.suggestion }}`,
+              body: [
+                '## FortiCNAPP AI Fix Suggestions',
+                '',
+                suggestion,
+                '',
+                '---',
+                '',
+                '## 📦 FortiCNAPP SBOM Generator',
+                '',
+                sbomTable,
+              ].join('\n'),
             });
